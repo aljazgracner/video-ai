@@ -15,12 +15,16 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 			'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 			'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0'
+			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0',
 		];
 
 		for (let attempt = 0; attempt < userAgents.length; attempt++) {
 			try {
-				console.log(`Attempting to extract video info for: ${url} (attempt ${attempt + 1})`);
+				console.log(
+					`Attempting to extract video info for: ${url} (attempt ${
+						attempt + 1
+					})`
+				);
 
 				// Validate URL first
 				if (!ytdl.validateURL(url)) {
@@ -32,19 +36,19 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 					requestOptions: {
 						headers: {
 							'User-Agent': userAgents[attempt],
-							'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+							Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
 							'Accept-Language': 'en-US,en;q=0.9',
 							'Accept-Encoding': 'gzip, deflate, br',
-							'DNT': '1',
-							'Connection': 'keep-alive',
+							DNT: '1',
+							Connection: 'keep-alive',
 							'Upgrade-Insecure-Requests': '1',
 							'Sec-Fetch-Dest': 'document',
 							'Sec-Fetch-Mode': 'navigate',
 							'Sec-Fetch-Site': 'none',
 							'Sec-Fetch-User': '?1',
-							'Cache-Control': 'max-age=0'
-						}
-					}
+							'Cache-Control': 'max-age=0',
+						},
+					},
 				});
 				console.log('Successfully got video info');
 
@@ -62,24 +66,33 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 				};
 			} catch (error) {
 				console.error(`Attempt ${attempt + 1} failed:`, error);
-				
+
 				if (attempt === userAgents.length - 1) {
 					console.error('All attempts failed. Error details:', {
-						message: error instanceof Error ? error.message : 'Unknown error',
+						message:
+							error instanceof Error
+								? error.message
+								: 'Unknown error',
 						stack: error instanceof Error ? error.stack : undefined,
 					});
 					throw new Error(
-						`Failed to extract video information after ${userAgents.length} attempts: ${
-							error instanceof Error ? error.message : 'Unknown error'
+						`Failed to extract video information after ${
+							userAgents.length
+						} attempts: ${
+							error instanceof Error
+								? error.message
+								: 'Unknown error'
 						}`
 					);
 				}
-				
+
 				// Wait a bit before retrying
-				await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+				await new Promise((resolve) =>
+					setTimeout(resolve, 1000 * (attempt + 1))
+				);
 			}
 		}
-		
+
 		throw new Error('Unexpected error in extractVideoInfo');
 	}
 
@@ -105,24 +118,25 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 				throw new Error('No audio format available for this video');
 			}
 
-			const audioStream = ytdl(url, { 
+			const audioStream = ytdl(url, {
 				format: audioFormat,
 				requestOptions: {
 					headers: {
-						'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-						'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+						'User-Agent':
+							'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+						Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
 						'Accept-Language': 'en-US,en;q=0.9',
 						'Accept-Encoding': 'gzip, deflate, br',
-						'DNT': '1',
-						'Connection': 'keep-alive',
+						DNT: '1',
+						Connection: 'keep-alive',
 						'Upgrade-Insecure-Requests': '1',
 						'Sec-Fetch-Dest': 'document',
 						'Sec-Fetch-Mode': 'navigate',
 						'Sec-Fetch-Site': 'none',
 						'Sec-Fetch-User': '?1',
-						'Cache-Control': 'max-age=0'
-					}
-				}
+						'Cache-Control': 'max-age=0',
+					},
+				},
 			});
 			const writeStream = fs.createWriteStream(audioFile);
 
