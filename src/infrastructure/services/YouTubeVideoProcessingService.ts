@@ -10,42 +10,77 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 		duration: number;
 		thumbnailUrl?: string;
 	}> {
-		try {
-			console.log('Attempting to extract video info for:', url);
+		const userAgents = [
+			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0'
+		];
 
-			// Validate URL first
-			if (!ytdl.validateURL(url)) {
-				throw new Error('Invalid YouTube URL');
+		for (let attempt = 0; attempt < userAgents.length; attempt++) {
+			try {
+				console.log(`Attempting to extract video info for: ${url} (attempt ${attempt + 1})`);
+
+				// Validate URL first
+				if (!ytdl.validateURL(url)) {
+					throw new Error('Invalid YouTube URL');
+				}
+
+				// Configure ytdl with different user agents to avoid bot detection
+				const info = await ytdl.getInfo(url, {
+					requestOptions: {
+						headers: {
+							'User-Agent': userAgents[attempt],
+							'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+							'Accept-Language': 'en-US,en;q=0.9',
+							'Accept-Encoding': 'gzip, deflate, br',
+							'DNT': '1',
+							'Connection': 'keep-alive',
+							'Upgrade-Insecure-Requests': '1',
+							'Sec-Fetch-Dest': 'document',
+							'Sec-Fetch-Mode': 'navigate',
+							'Sec-Fetch-Site': 'none',
+							'Sec-Fetch-User': '?1',
+							'Cache-Control': 'max-age=0'
+						}
+					}
+				});
+				console.log('Successfully got video info');
+
+				const videoDetails = info.videoDetails;
+				console.log('Video details:', {
+					title: videoDetails.title,
+					duration: videoDetails.lengthSeconds,
+					hasThumbnails: !!videoDetails.thumbnails?.length,
+				});
+
+				return {
+					title: videoDetails.title,
+					duration: parseInt(videoDetails.lengthSeconds) || 0,
+					thumbnailUrl: videoDetails.thumbnails?.[0]?.url,
+				};
+			} catch (error) {
+				console.error(`Attempt ${attempt + 1} failed:`, error);
+				
+				if (attempt === userAgents.length - 1) {
+					console.error('All attempts failed. Error details:', {
+						message: error instanceof Error ? error.message : 'Unknown error',
+						stack: error instanceof Error ? error.stack : undefined,
+					});
+					throw new Error(
+						`Failed to extract video information after ${userAgents.length} attempts: ${
+							error instanceof Error ? error.message : 'Unknown error'
+						}`
+					);
+				}
+				
+				// Wait a bit before retrying
+				await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
 			}
-
-			const info = await ytdl.getInfo(url);
-			console.log('Successfully got video info');
-
-			const videoDetails = info.videoDetails;
-			console.log('Video details:', {
-				title: videoDetails.title,
-				duration: videoDetails.lengthSeconds,
-				hasThumbnails: !!videoDetails.thumbnails?.length,
-			});
-
-			return {
-				title: videoDetails.title,
-				duration: parseInt(videoDetails.lengthSeconds) || 0,
-				thumbnailUrl: videoDetails.thumbnails?.[0]?.url,
-			};
-		} catch (error) {
-			console.error('Error extracting video info:', error);
-			console.error('Error details:', {
-				message:
-					error instanceof Error ? error.message : 'Unknown error',
-				stack: error instanceof Error ? error.stack : undefined,
-			});
-			throw new Error(
-				`Failed to extract video information: ${
-					error instanceof Error ? error.message : 'Unknown error'
-				}`
-			);
 		}
+		
+		throw new Error('Unexpected error in extractVideoInfo');
 	}
 
 	async getVideoTranscript(url: string): Promise<{
@@ -70,7 +105,25 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 				throw new Error('No audio format available for this video');
 			}
 
-			const audioStream = ytdl(url, { format: audioFormat });
+			const audioStream = ytdl(url, { 
+				format: audioFormat,
+				requestOptions: {
+					headers: {
+						'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+						'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+						'Accept-Language': 'en-US,en;q=0.9',
+						'Accept-Encoding': 'gzip, deflate, br',
+						'DNT': '1',
+						'Connection': 'keep-alive',
+						'Upgrade-Insecure-Requests': '1',
+						'Sec-Fetch-Dest': 'document',
+						'Sec-Fetch-Mode': 'navigate',
+						'Sec-Fetch-Site': 'none',
+						'Sec-Fetch-User': '?1',
+						'Cache-Control': 'max-age=0'
+					}
+				}
+			});
 			const writeStream = fs.createWriteStream(audioFile);
 
 			await new Promise<void>((resolve, reject) => {
