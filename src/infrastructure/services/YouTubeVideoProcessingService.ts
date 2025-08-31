@@ -62,7 +62,7 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 				fs.mkdirSync(tempDir, { recursive: true });
 			}
 
-			const ytdlOptions: any = {
+			const ytdlOptions: Record<string, unknown> = {
 				format: 'bestaudio',
 				output: audioFile.replace('.wav', '.%(ext)s'),
 				noCheckCertificates: true,
@@ -336,7 +336,7 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 
 		// If no JSON structure found, try to extract plain text
 		// Remove common markdown formatting
-		let cleanText = responseText
+		const cleanText = responseText
 			.replace(/```json\s*/g, '')
 			.replace(/```\s*/g, '')
 			.replace(/^\s*\{[\s\S]*?"text"\s*:\s*"/, '')

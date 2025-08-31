@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { HistoryItem } from '../../src/types';
+import { HistoryItem, Video, Transcript } from '../../src/types';
 import { formatTime, formatDate } from '../../src/utils';
 
 interface VideoHistoryProps {
-	onVideoClick?: (video: any, transcript: any) => void;
+	onVideoClick?: (video: Video, transcript: Transcript) => void;
 }
 
 export default function VideoHistory({ onVideoClick }: VideoHistoryProps = {}) {

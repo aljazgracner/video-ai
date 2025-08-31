@@ -5,10 +5,10 @@ const videoRepository = new DrizzleVideoRepository();
 
 export async function DELETE(
 	request: NextRequest,
-	{ params }: { params: { id: string } }
+	{ params }: { params: Promise<{ id: string }> }
 ) {
 	try {
-		const videoId = params.id;
+		const { id: videoId } = await params;
 
 		if (!videoId) {
 			return NextResponse.json(
