@@ -1,28 +1,8 @@
-import youtubedl from 'youtube-dl-exec';
+import ytdl from '@distube/ytdl-core';
 import { VideoProcessingService } from '../../domain/services/VideoProcessingService';
 import { TokenCalculator, TokenUsage } from '../utils/tokenCalculator';
 import path from 'path';
 import fs from 'fs';
-import { promisify } from 'util';
-import { exec } from 'child_process';
-
-const ytdl = youtubedl.create(
-	path.resolve(process.cwd(), 'node_modules/youtube-dl-exec/bin/yt-dlp')
-);
-
-interface YouTubeVideoInfo {
-	title: string;
-	duration: number;
-	thumbnail: string;
-	subtitles?: {
-		en?: Array<{
-			url: string;
-			ext: string;
-		}>;
-	};
-}
-
-const execAsync = promisify(exec);
 
 export class YouTubeVideoProcessingService implements VideoProcessingService {
 	async extractVideoInfo(url: string): Promise<{
@@ -31,22 +11,40 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 		thumbnailUrl?: string;
 	}> {
 		try {
-			const videoInfo = (await ytdl(url, {
-				dumpSingleJson: true,
-				noCheckCertificates: true,
-				noWarnings: true,
-				preferFreeFormats: true,
-				addHeader: ['referer:youtube.com', 'user-agent:googlebot'],
-			})) as YouTubeVideoInfo;
+			console.log('Attempting to extract video info for:', url);
+
+			// Validate URL first
+			if (!ytdl.validateURL(url)) {
+				throw new Error('Invalid YouTube URL');
+			}
+
+			const info = await ytdl.getInfo(url);
+			console.log('Successfully got video info');
+
+			const videoDetails = info.videoDetails;
+			console.log('Video details:', {
+				title: videoDetails.title,
+				duration: videoDetails.lengthSeconds,
+				hasThumbnails: !!videoDetails.thumbnails?.length,
+			});
 
 			return {
-				title: videoInfo.title,
-				duration: Math.floor(videoInfo.duration || 0),
-				thumbnailUrl: videoInfo.thumbnail,
+				title: videoDetails.title,
+				duration: parseInt(videoDetails.lengthSeconds) || 0,
+				thumbnailUrl: videoDetails.thumbnails?.[0]?.url,
 			};
 		} catch (error) {
 			console.error('Error extracting video info:', error);
-			throw new Error('Failed to extract video information');
+			console.error('Error details:', {
+				message:
+					error instanceof Error ? error.message : 'Unknown error',
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+			throw new Error(
+				`Failed to extract video information: ${
+					error instanceof Error ? error.message : 'Unknown error'
+				}`
+			);
 		}
 	}
 
@@ -54,62 +52,55 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 		transcript: string;
 		tokenUsage: TokenUsage;
 	}> {
-		const tempDir = path.join(process.cwd(), 'temp');
-		const audioFile = path.join(tempDir, `audio_${Date.now()}.wav`);
+		const tempDir = '/tmp';
+		const audioFile = path.join(tempDir, `audio_${Date.now()}.mp3`);
 
 		try {
 			if (!fs.existsSync(tempDir)) {
 				fs.mkdirSync(tempDir, { recursive: true });
 			}
 
-			const ytdlOptions: Record<string, unknown> = {
-				format: 'bestaudio',
-				output: audioFile.replace('.wav', '.%(ext)s'),
-				noCheckCertificates: true,
-				noWarnings: true,
-				preferFreeFormats: true,
-				addHeader: ['referer:youtube.com', 'user-agent:googlebot'],
-			};
+			const videoInfo = await ytdl.getInfo(url);
+			const audioFormat = ytdl.chooseFormat(videoInfo.formats, {
+				quality: 'highestaudio',
+				filter: 'audioonly',
+			});
 
-			await ytdl(url, ytdlOptions);
-
-			const actualAudioFile = this.findDownloadedAudioFile(tempDir);
-			if (!actualAudioFile) {
-				throw new Error('Failed to find downloaded audio file');
+			if (!audioFormat) {
+				throw new Error('No audio format available for this video');
 			}
 
-			const audioStats = fs.statSync(actualAudioFile);
+			const audioStream = ytdl(url, { format: audioFormat });
+			const writeStream = fs.createWriteStream(audioFile);
+
+			await new Promise<void>((resolve, reject) => {
+				audioStream.pipe(writeStream);
+				audioStream.on('error', reject);
+				writeStream.on('error', reject);
+				writeStream.on('finish', () => resolve());
+			});
+
+			const audioStats = fs.statSync(audioFile);
 			const audioSizeBytes = audioStats.size;
 
+			console.log(`Downloaded audio file: ${audioSizeBytes} bytes`);
+
 			const { transcript, tokenUsage } = await this.transcribeAudio(
-				actualAudioFile
+				audioFile
 			);
 
-			fs.unlinkSync(actualAudioFile);
+			fs.unlinkSync(audioFile);
 
 			return { transcript, tokenUsage };
 		} catch (error) {
 			console.error('Error getting video transcript:', error);
 
-			const actualAudioFile = this.findDownloadedAudioFile(tempDir);
-			if (actualAudioFile && fs.existsSync(actualAudioFile)) {
-				fs.unlinkSync(actualAudioFile);
+			if (fs.existsSync(audioFile)) {
+				fs.unlinkSync(audioFile);
 			}
 
 			throw new Error('Failed to get video transcript');
 		}
-	}
-
-	private findDownloadedAudioFile(tempDir: string): string | null {
-		const files = fs.readdirSync(tempDir);
-		const audioFile = files.find(
-			(file) =>
-				file.endsWith('.mp3') ||
-				file.endsWith('.webm') ||
-				file.endsWith('.m4a') ||
-				file.endsWith('.wav')
-		);
-		return audioFile ? path.join(tempDir, audioFile) : null;
 	}
 
 	private async transcribeAudio(audioFilePath: string): Promise<{
@@ -220,7 +211,6 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 				console.error('JSON parse error:', parseError);
 				console.error('Failed to parse response:', cleanedResponse);
 
-				// Fallback: try to extract just the transcript text if JSON parsing fails
 				console.log(
 					'Attempting fallback: extracting transcript text only'
 				);
@@ -253,20 +243,17 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 	}
 
 	private extractJsonFromResponse(responseText: string): string {
-		// First try to find JSON in code blocks
 		const codeBlockMatch = responseText.match(
 			/```(?:json)?\s*(\{[\s\S]*?)\s*```/
 		);
 		if (codeBlockMatch) {
 			const jsonContent = codeBlockMatch[1];
-			// Try to find the complete JSON object within the code block
 			const completeJson = this.findCompleteJsonObject(jsonContent);
 			if (completeJson) {
 				return completeJson;
 			}
 		}
 
-		// Try to find JSON object boundaries more carefully
 		const jsonStart = responseText.indexOf('{');
 		if (jsonStart === -1) {
 			throw new Error('No JSON object found in response');
@@ -279,12 +266,10 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 			return completeJson;
 		}
 
-		// If no complete JSON found, throw a special error that will trigger fallback
 		throw new Error('INCOMPLETE_JSON');
 	}
 
 	private findCompleteJsonObject(text: string): string | null {
-		// Find the matching closing brace by counting braces
 		let braceCount = 0;
 		let jsonEnd = -1;
 
@@ -306,7 +291,6 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 
 		const jsonCandidate = text.substring(0, jsonEnd + 1);
 
-		// Try to parse it to make sure it's valid JSON
 		try {
 			JSON.parse(jsonCandidate);
 			return jsonCandidate;
@@ -316,7 +300,6 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 	}
 
 	private extractFallbackTranscript(responseText: string): string {
-		// Try to find the "text" field value in the response (even if JSON is incomplete)
 		const textMatch = responseText.match(
 			/"text"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/
 		);
@@ -324,7 +307,6 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 			return textMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n');
 		}
 
-		// Try to find text after "text": " even if the JSON is incomplete
 		const partialTextMatch = responseText.match(
 			/"text"\s*:\s*"([^"]*(?:\\.[^"]*)*)/
 		);
@@ -334,8 +316,6 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 				.replace(/\\n/g, '\n');
 		}
 
-		// If no JSON structure found, try to extract plain text
-		// Remove common markdown formatting
 		const cleanText = responseText
 			.replace(/```json\s*/g, '')
 			.replace(/```\s*/g, '')
@@ -343,9 +323,7 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 			.replace(/"[\s\S]*$/, '')
 			.trim();
 
-		// If we still have a lot of JSON structure, try a different approach
 		if (cleanText.includes('{') || cleanText.includes('}')) {
-			// Look for text between quotes that might be the transcript
 			const quotedTextMatch = responseText.match(/"([^"]{100,})"/);
 			if (quotedTextMatch) {
 				return quotedTextMatch[1]

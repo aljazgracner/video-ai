@@ -20,7 +20,7 @@
 		"postgres": "^3.4.4",
 		"react": "19.1.0",
 		"react-dom": "19.1.0",
-		"youtube-dl-exec": "^3.0.24"
+		"@distube/ytdl-core": "^4.15.0"
 	},
 	"devDependencies": {
 		"@eslint/eslintrc": "^3",
