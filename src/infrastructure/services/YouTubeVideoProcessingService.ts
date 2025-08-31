@@ -4,6 +4,10 @@ import { TokenCalculator, TokenUsage } from '../utils/tokenCalculator';
 import path from 'path';
 import fs from 'fs';
 
+// Configure ytdl-core for serverless environment
+process.env.YTDL_NO_UPDATE = 'true';
+process.env.YTDL_SKIP_DOWNLOAD = 'true';
+
 export class YouTubeVideoProcessingService implements VideoProcessingService {
 	async extractVideoInfo(url: string): Promise<{
 		title: string;
@@ -18,6 +22,10 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0',
 		];
 
+		// Set working directory to /tmp for serverless environment
+		const originalCwd = process.cwd();
+		process.chdir('/tmp');
+
 		for (let attempt = 0; attempt < userAgents.length; attempt++) {
 			try {
 				console.log(
@@ -28,6 +36,7 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 
 				// Validate URL first
 				if (!ytdl.validateURL(url)) {
+					process.chdir(originalCwd);
 					throw new Error('Invalid YouTube URL');
 				}
 
@@ -59,6 +68,9 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 					hasThumbnails: !!videoDetails.thumbnails?.length,
 				});
 
+				// Restore original working directory
+				process.chdir(originalCwd);
+
 				return {
 					title: videoDetails.title,
 					duration: parseInt(videoDetails.lengthSeconds) || 0,
@@ -68,6 +80,9 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 				console.error(`Attempt ${attempt + 1} failed:`, error);
 
 				if (attempt === userAgents.length - 1) {
+					// Restore original working directory before throwing final error
+					process.chdir(originalCwd);
+
 					console.error('All attempts failed. Error details:', {
 						message:
 							error instanceof Error
@@ -93,6 +108,8 @@ export class YouTubeVideoProcessingService implements VideoProcessingService {
 			}
 		}
 
+		// Restore original working directory
+		process.chdir(originalCwd);
 		throw new Error('Unexpected error in extractVideoInfo');
 	}
 
