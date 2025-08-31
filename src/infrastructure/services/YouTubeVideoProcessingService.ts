@@ -1,421 +1,209 @@
-import ytdl from '@distube/ytdl-core';
+import { google } from 'googleapis';
 import { VideoProcessingService } from '../../domain/services/VideoProcessingService';
 import { TokenCalculator, TokenUsage } from '../utils/tokenCalculator';
-import path from 'path';
-import fs from 'fs';
-
-// Configure ytdl-core for serverless environment
-process.env.YTDL_NO_UPDATE = 'true';
-process.env.YTDL_SKIP_DOWNLOAD = 'true';
 
 export class YouTubeVideoProcessingService implements VideoProcessingService {
+	private extractVideoId(url: string): string | null {
+		const regex =
+			/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/;
+		const match = url.match(regex);
+		return match ? match[1] : null;
+	}
+
+	private parseDuration(duration: string): number {
+		// Parse ISO 8601 duration (PT4M13S = 4 minutes 13 seconds)
+		const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+		if (!match) return 0;
+
+		const hours = parseInt(match[1] || '0');
+		const minutes = parseInt(match[2] || '0');
+		const seconds = parseInt(match[3] || '0');
+
+		return hours * 3600 + minutes * 60 + seconds;
+	}
+
 	async extractVideoInfo(url: string): Promise<{
 		title: string;
 		duration: number;
 		thumbnailUrl?: string;
 	}> {
-		const userAgents = [
-			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-			'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-			'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0',
-		];
+		console.log('Extracting video info using YouTube Data API v3 for:', url);
 
-		// Set working directory to /tmp for serverless environment
-		const originalCwd = process.cwd();
-		process.chdir('/tmp');
-
-		for (let attempt = 0; attempt < userAgents.length; attempt++) {
-			try {
-				console.log(
-					`Attempting to extract video info for: ${url} (attempt ${
-						attempt + 1
-					})`
-				);
-
-				// Validate URL first
-				if (!ytdl.validateURL(url)) {
-					process.chdir(originalCwd);
-					throw new Error('Invalid YouTube URL');
-				}
-
-				// Configure ytdl with different user agents to avoid bot detection
-				const info = await ytdl.getInfo(url, {
-					requestOptions: {
-						headers: {
-							'User-Agent': userAgents[attempt],
-							Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-							'Accept-Language': 'en-US,en;q=0.9',
-							'Accept-Encoding': 'gzip, deflate, br',
-							DNT: '1',
-							Connection: 'keep-alive',
-							'Upgrade-Insecure-Requests': '1',
-							'Sec-Fetch-Dest': 'document',
-							'Sec-Fetch-Mode': 'navigate',
-							'Sec-Fetch-Site': 'none',
-							'Sec-Fetch-User': '?1',
-							'Cache-Control': 'max-age=0',
-						},
-					},
-				});
-				console.log('Successfully got video info');
-
-				const videoDetails = info.videoDetails;
-				console.log('Video details:', {
-					title: videoDetails.title,
-					duration: videoDetails.lengthSeconds,
-					hasThumbnails: !!videoDetails.thumbnails?.length,
-				});
-
-				// Restore original working directory
-				process.chdir(originalCwd);
-
-				return {
-					title: videoDetails.title,
-					duration: parseInt(videoDetails.lengthSeconds) || 0,
-					thumbnailUrl: videoDetails.thumbnails?.[0]?.url,
-				};
-			} catch (error) {
-				console.error(`Attempt ${attempt + 1} failed:`, error);
-
-				if (attempt === userAgents.length - 1) {
-					// Restore original working directory before throwing final error
-					process.chdir(originalCwd);
-
-					console.error('All attempts failed. Error details:', {
-						message:
-							error instanceof Error
-								? error.message
-								: 'Unknown error',
-						stack: error instanceof Error ? error.stack : undefined,
-					});
-					throw new Error(
-						`Failed to extract video information after ${
-							userAgents.length
-						} attempts: ${
-							error instanceof Error
-								? error.message
-								: 'Unknown error'
-						}`
-					);
-				}
-
-				// Wait a bit before retrying
-				await new Promise((resolve) =>
-					setTimeout(resolve, 1000 * (attempt + 1))
-				);
-			}
+		const videoId = this.extractVideoId(url);
+		if (!videoId) {
+			throw new Error('Invalid YouTube URL - could not extract video ID');
 		}
 
-		// Restore original working directory
-		process.chdir(originalCwd);
-		throw new Error('Unexpected error in extractVideoInfo');
+		const apiKey = process.env.YOUTUBE_API_KEY;
+		if (!apiKey) {
+			throw new Error('YOUTUBE_API_KEY environment variable is required');
+		}
+
+		try {
+			const youtube = google.youtube({
+				version: 'v3',
+				auth: apiKey,
+			});
+
+			const response = await youtube.videos.list({
+				part: ['snippet', 'contentDetails'],
+				id: [videoId],
+			});
+
+			if (!response.data.items || response.data.items.length === 0) {
+				throw new Error('Video not found or not accessible');
+			}
+
+			const video = response.data.items[0];
+			const snippet = video.snippet;
+			const contentDetails = video.contentDetails;
+
+			// Parse duration (ISO 8601 format like PT4M13S)
+			const duration = this.parseDuration(contentDetails?.duration || '0');
+
+			const result = {
+				title: snippet?.title || 'Unknown Title',
+				duration: duration,
+				thumbnailUrl:
+					snippet?.thumbnails?.high?.url ||
+					snippet?.thumbnails?.default?.url ||
+					undefined,
+			};
+
+			console.log('Successfully extracted video info:', {
+				title: result.title,
+				duration: result.duration,
+				hasThumbnail: !!result.thumbnailUrl,
+			});
+
+			return result;
+		} catch (error) {
+			console.error('YouTube Data API error:', error);
+			throw new Error(
+				`Failed to extract video information: ${
+					error instanceof Error ? error.message : 'Unknown error'
+				}`
+			);
+		}
 	}
 
 	async getVideoTranscript(url: string): Promise<{
 		transcript: string;
 		tokenUsage: TokenUsage;
 	}> {
-		const tempDir = '/tmp';
-		const audioFile = path.join(tempDir, `audio_${Date.now()}.mp3`);
+		console.log('Getting video transcript for:', url);
 
-		try {
-			if (!fs.existsSync(tempDir)) {
-				fs.mkdirSync(tempDir, { recursive: true });
-			}
+		// For now, we'll use a placeholder since YouTube's official API doesn't provide
+		// direct access to audio content for transcription. Here are the alternatives:
 
-			const videoInfo = await ytdl.getInfo(url);
-			const audioFormat = ytdl.chooseFormat(videoInfo.formats, {
-				quality: 'highestaudio',
-				filter: 'audioonly',
-			});
+		// Option 1: Use YouTube's automatic captions (if available)
+		// Option 2: Use a third-party transcription service
+		// Option 3: Implement audio extraction with proper licensing
+		// Option 4: Use YouTube's captions API (requires additional setup)
 
-			if (!audioFormat) {
-				throw new Error('No audio format available for this video');
-			}
-
-			const audioStream = ytdl(url, {
-				format: audioFormat,
-				requestOptions: {
-					headers: {
-						'User-Agent':
-							'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-						Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-						'Accept-Language': 'en-US,en;q=0.9',
-						'Accept-Encoding': 'gzip, deflate, br',
-						DNT: '1',
-						Connection: 'keep-alive',
-						'Upgrade-Insecure-Requests': '1',
-						'Sec-Fetch-Dest': 'document',
-						'Sec-Fetch-Mode': 'navigate',
-						'Sec-Fetch-Site': 'none',
-						'Sec-Fetch-User': '?1',
-						'Cache-Control': 'max-age=0',
-					},
-				},
-			});
-			const writeStream = fs.createWriteStream(audioFile);
-
-			await new Promise<void>((resolve, reject) => {
-				audioStream.pipe(writeStream);
-				audioStream.on('error', reject);
-				writeStream.on('error', reject);
-				writeStream.on('finish', () => resolve());
-			});
-
-			const audioStats = fs.statSync(audioFile);
-			const audioSizeBytes = audioStats.size;
-
-			console.log(`Downloaded audio file: ${audioSizeBytes} bytes`);
-
-			const { transcript, tokenUsage } = await this.transcribeAudio(
-				audioFile
-			);
-
-			fs.unlinkSync(audioFile);
-
-			return { transcript, tokenUsage };
-		} catch (error) {
-			console.error('Error getting video transcript:', error);
-
-			if (fs.existsSync(audioFile)) {
-				fs.unlinkSync(audioFile);
-			}
-
-			throw new Error('Failed to get video transcript');
+		const videoId = this.extractVideoId(url);
+		if (!videoId) {
+			throw new Error('Invalid YouTube URL - could not extract video ID');
 		}
-	}
 
-	private async transcribeAudio(audioFilePath: string): Promise<{
-		transcript: string;
-		tokenUsage: TokenUsage;
-	}> {
+		// Try to get captions using YouTube Data API
 		try {
-			const { GoogleGenerativeAI } = await import(
-				'@google/generative-ai'
-			);
-
-			const apiKey = process.env.GEMINI_API_KEY;
+			const apiKey = process.env.YOUTUBE_API_KEY;
 			if (!apiKey) {
-				throw new Error(
-					'GEMINI_API_KEY environment variable is required'
-				);
+				throw new Error('YOUTUBE_API_KEY environment variable is required');
 			}
 
-			const genAI = new GoogleGenerativeAI(apiKey);
-			const model = genAI.getGenerativeModel({
-				model: 'gemini-1.5-flash',
+			const youtube = google.youtube({
+				version: 'v3',
+				auth: apiKey,
 			});
 
-			const audioData = fs.readFileSync(audioFilePath);
-			const audioBase64 = audioData.toString('base64');
+			// Get captions list
+			const captionsResponse = await youtube.captions.list({
+				part: ['snippet'],
+				videoId: videoId,
+			});
 
-			const fileExtension = path.extname(audioFilePath).toLowerCase();
-			let mimeType = 'audio/mp3';
-			if (fileExtension === '.wav') mimeType = 'audio/wav';
-			else if (fileExtension === '.webm') mimeType = 'audio/webm';
-			else if (fileExtension === '.m4a') mimeType = 'audio/mp4';
-
-			const prompt = `
-			Please transcribe the following audio file.
-			
-			CRITICAL: You must return ONLY a valid JSON object. Do not include any markdown formatting, code blocks, explanations, or additional text.
-			
-			Return exactly this JSON structure:
-			{
-			  "text": "Full transcript text here"
-			}
-			
-			Guidelines:
-			- Provide accurate transcription of all spoken content
-			- Include all spoken words and sentences
-			- Return ONLY the JSON object - no code blocks, no explanations, no additional text
-			`;
-
-			const inputTokens =
-				TokenCalculator.estimateAudioTokens(audioData.length) +
-				TokenCalculator.estimateTokens(prompt);
-
-			const result = await model.generateContent([
-				prompt,
-				{
-					inlineData: {
-						data: audioBase64,
-						mimeType: mimeType,
-					},
-				},
-			]);
-
-			const response = await result.response;
-			const responseText = response.text();
-
-			console.log('Raw Gemini response length:', responseText.length);
-			console.log(
-				'Raw Gemini response preview:',
-				responseText.substring(0, 500)
-			);
-
-			let cleanedResponse;
-			try {
-				cleanedResponse = this.extractJsonFromResponse(responseText);
-				console.log('Cleaned response length:', cleanedResponse.length);
-				console.log(
-					'Cleaned response preview:',
-					cleanedResponse.substring(0, 500)
+			if (captionsResponse.data.items && captionsResponse.data.items.length > 0) {
+				// Find English captions
+				const englishCaptions = captionsResponse.data.items.find(
+					(caption) => caption.snippet?.language === 'en'
 				);
-			} catch (extractError) {
-				if (
-					extractError instanceof Error &&
-					extractError.message === 'INCOMPLETE_JSON'
-				) {
-					console.log(
-						'Incomplete JSON detected, using fallback extraction'
-					);
-					const fallbackTranscript =
-						this.extractFallbackTranscript(responseText);
+
+				if (englishCaptions) {
+					console.log('Found English captions, attempting to download...');
+					
+					// Download captions
+					const captionContent = await youtube.captions.download({
+						id: englishCaptions.id!,
+						tfmt: 'srt', // or 'ttml', 'vtt'
+					});
+
+					// Parse SRT format to get just the text
+					const transcript = this.parseSRTContent(captionContent.data as string);
+					
 					return {
-						transcript: fallbackTranscript,
+						transcript,
 						tokenUsage: {
-							inputTokens,
-							outputTokens:
-								TokenCalculator.estimateTokens(
-									fallbackTranscript
-								),
+							inputTokens: TokenCalculator.estimateTokens(transcript),
+							outputTokens: 0,
 						},
 					};
 				}
-				throw extractError;
 			}
 
-			let parsedResponse;
-			try {
-				parsedResponse = JSON.parse(cleanedResponse);
-			} catch (parseError) {
-				console.error('JSON parse error:', parseError);
-				console.error('Failed to parse response:', cleanedResponse);
-
-				console.log(
-					'Attempting fallback: extracting transcript text only'
-				);
-				const fallbackTranscript =
-					this.extractFallbackTranscript(responseText);
-				return {
-					transcript: fallbackTranscript,
-					tokenUsage: {
-						inputTokens,
-						outputTokens:
-							TokenCalculator.estimateTokens(fallbackTranscript),
-					},
-				};
-			}
-
-			const transcript = parsedResponse.text || '';
-			const outputTokens = TokenCalculator.estimateTokens(transcript);
+			// No captions available, return placeholder
+			const placeholderTranscript = `No captions available for this video (${url}). 
+			The video may not have automatic captions enabled, or captions may not be available in English.
+			
+			To get transcripts for this video, you would need to:
+			1. Enable captions on the YouTube video
+			2. Use a different transcription service
+			3. Implement audio extraction with proper licensing`;
 
 			return {
-				transcript,
+				transcript: placeholderTranscript,
 				tokenUsage: {
-					inputTokens,
-					outputTokens,
+					inputTokens: TokenCalculator.estimateTokens(placeholderTranscript),
+					outputTokens: 0,
 				},
 			};
 		} catch (error) {
-			console.error('Error transcribing audio with Gemini:', error);
-			throw new Error('Failed to transcribe audio');
+			console.error('Error getting captions:', error);
+			
+			const errorTranscript = `Error retrieving captions for video (${url}): ${
+				error instanceof Error ? error.message : 'Unknown error'
+			}`;
+
+			return {
+				transcript: errorTranscript,
+				tokenUsage: {
+					inputTokens: TokenCalculator.estimateTokens(errorTranscript),
+					outputTokens: 0,
+				},
+			};
 		}
 	}
 
-	private extractJsonFromResponse(responseText: string): string {
-		const codeBlockMatch = responseText.match(
-			/```(?:json)?\s*(\{[\s\S]*?)\s*```/
-		);
-		if (codeBlockMatch) {
-			const jsonContent = codeBlockMatch[1];
-			const completeJson = this.findCompleteJsonObject(jsonContent);
-			if (completeJson) {
-				return completeJson;
+	private parseSRTContent(srtContent: string): string {
+		// Parse SRT format and extract just the text
+		const lines = srtContent.split('\n');
+		const textLines: string[] = [];
+
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			
+			// Skip empty lines, sequence numbers, and timestamps
+			if (line === '' || /^\d+$/.test(line) || line.includes('-->')) {
+				continue;
+			}
+			
+			// This should be a text line
+			if (line.length > 0) {
+				textLines.push(line);
 			}
 		}
 
-		const jsonStart = responseText.indexOf('{');
-		if (jsonStart === -1) {
-			throw new Error('No JSON object found in response');
-		}
-
-		const completeJson = this.findCompleteJsonObject(
-			responseText.substring(jsonStart)
-		);
-		if (completeJson) {
-			return completeJson;
-		}
-
-		throw new Error('INCOMPLETE_JSON');
-	}
-
-	private findCompleteJsonObject(text: string): string | null {
-		let braceCount = 0;
-		let jsonEnd = -1;
-
-		for (let i = 0; i < text.length; i++) {
-			if (text[i] === '{') {
-				braceCount++;
-			} else if (text[i] === '}') {
-				braceCount--;
-				if (braceCount === 0) {
-					jsonEnd = i;
-					break;
-				}
-			}
-		}
-
-		if (jsonEnd === -1) {
-			return null;
-		}
-
-		const jsonCandidate = text.substring(0, jsonEnd + 1);
-
-		try {
-			JSON.parse(jsonCandidate);
-			return jsonCandidate;
-		} catch {
-			return null;
-		}
-	}
-
-	private extractFallbackTranscript(responseText: string): string {
-		const textMatch = responseText.match(
-			/"text"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/
-		);
-		if (textMatch) {
-			return textMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n');
-		}
-
-		const partialTextMatch = responseText.match(
-			/"text"\s*:\s*"([^"]*(?:\\.[^"]*)*)/
-		);
-		if (partialTextMatch) {
-			return partialTextMatch[1]
-				.replace(/\\"/g, '"')
-				.replace(/\\n/g, '\n');
-		}
-
-		const cleanText = responseText
-			.replace(/```json\s*/g, '')
-			.replace(/```\s*/g, '')
-			.replace(/^\s*\{[\s\S]*?"text"\s*:\s*"/, '')
-			.replace(/"[\s\S]*$/, '')
-			.trim();
-
-		if (cleanText.includes('{') || cleanText.includes('}')) {
-			const quotedTextMatch = responseText.match(/"([^"]{100,})"/);
-			if (quotedTextMatch) {
-				return quotedTextMatch[1]
-					.replace(/\\"/g, '"')
-					.replace(/\\n/g, '\n');
-			}
-		}
-
-		return cleanText || responseText;
+		return textLines.join(' ');
 	}
 }
